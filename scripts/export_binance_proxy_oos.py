@@ -62,8 +62,9 @@ def samples(frame):
        np.divide(v15,v60,out=np.ones(len(close)),where=v60>0),
        prior/lag1-1,prior/lag3-1]),index=frame.index,columns=FEATURES)
     target=(close[cycle+14]>strike).astype(int)
-    eligible=(minute>=1)&np.isfinite(x.to_numpy(float)).all(axis=1)&(close[cycle+14]!=strike)
-    return x,target,eligible,strike
+    eligible=(minute>=1)&np.isfinite(x.to_numpy(float)).all(axis=1)
+    no_tie=(close[cycle+14]!=strike)
+    return x,target,eligible,no_tie,strike
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -73,8 +74,9 @@ def main():
     train,train_meta=load(2024,12,args.cache)
     test,test_meta=load(2025,12,args.cache)
     assert train.index.max()<pd.Timestamp("2025-01-01T00:00:00Z")<test.index.min()
-    xt,yt,ok,_=samples(train)
-    xo,_,oos,strike=samples(test)
+    xt,yt,eligible_train,no_tie,_=samples(train)
+    xo,_,oos,_,strike=samples(test)
+    ok=eligible_train & no_tie
     model=HistGradientBoostingClassifier(max_iter=150,learning_rate=.05,
       max_leaf_nodes=15,min_samples_leaf=20,l2_regularization=1.,
       early_stopping=False,random_state=42)
