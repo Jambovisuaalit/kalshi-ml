@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalshi-ml"
+version = "0.2.0"
+description = "Modular KXBTC15M research and trading system"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+dynamic = ["dependencies"]
+
+[project.scripts]
+kalshi-ml = "kalshi_ml.cli:main"
+kalshi-ml-run = "kalshi_ml.runner:main"
+kalshi-ml-quickstart = "kalshi_ml.setup:main"
+kalshi-ml-train = "kalshi_ml.model.trainer:main"
+kalshi-ml-transfer = "kalshi_ml.execution.collateral:main"
+kalshi-ml-performance = "kalshi_ml.storage.journal:performance_main"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["kalshi_ml*"]
+
+[tool.setuptools.data-files]
+"share/kalshi-ml/models" = ["models/hgb_btc15m_prod.joblib", "models/hgb_btc15m_prod.metadata.json", "models/manifest.json", "models/MODEL_CARD.md"]
+"share/kalshi-ml" = [".env.example", "requirements.txt"]

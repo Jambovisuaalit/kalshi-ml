@@ -1,0 +1,36 @@
+[Unit]
+Description=kalshi-ml paper trading supervisor
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=kalshi-bot
+Group=kalshi-bot
+WorkingDirectory=/opt/kalshi-ml
+EnvironmentFile=/etc/kalshi-ml/kalshi.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+ExecStart=/opt/kalshi-ml/.venv/bin/kalshi-ml-run --mode paper --state /var/lib/kalshi-ml/paper-exchange-2.sqlite3 --log-file /var/log/kalshi-ml/paper.log
+StateDirectory=kalshi-ml
+LogsDirectory=kalshi-ml
+UMask=0077
+Restart=on-failure
+RestartSec=15s
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/kalshi-ml
+ReadWritePaths=/var/lib/kalshi-ml /var/log/kalshi-ml
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

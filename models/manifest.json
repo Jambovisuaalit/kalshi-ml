@@ -1,0 +1,8 @@
+{
+  "release": "0.2.0",
+  "model": "hgb_btc15m_prod.joblib",
+  "sha256": "b2e85f5a5fd0fd6e6aa7301b2ecad3d969b346ebfb4f90ac76b89d109901915d",
+  "sklearn_version": "1.9.1",
+  "price_mode": "SPOT_PROXY",
+  "release_status": "not_live_validated"
+}

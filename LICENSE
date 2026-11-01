@@ -1,0 +1,80 @@
+KALSHI-ML PROPRIETARY SOURCE CODE LICENSE — SINGLE USER
+Version 1.0
+
+Copyright is retained by the Licensor and any identified contributors.
+All rights reserved except as expressly granted below.
+
+1. Parties and scope
+The Licensor is the seller identified in your purchase agreement, order
+confirmation or invoice for this software. The Licensee is the purchaser
+identified in that document. This license covers the original kalshi-ml source
+code, documentation and model files supplied by the Licensor (the Software).
+Third-party software, data, services and their trademarks are excluded and
+remain subject to their own terms and licenses.
+
+2. Single-user grant
+After payment of the agreed license fee, the Licensor grants the Licensee a
+non-exclusive license to install, run and privately modify the Software for
+the Licensee's own lawful trading, research and internal use. One license
+permits one named natural person to operate the Software. A business purchaser
+may designate one operator. Backups, a development installation and a server
+installation for that same operator are permitted. Additional operators,
+customer accounts or managed trading services require a separate agreement.
+No recurring fee or license expiry is imposed by this file unless separately
+agreed in the purchase agreement. Ownership of the Software is not transferred.
+
+3. Restrictions
+Except where mandatory law or a third-party license permits otherwise, the
+Licensee may not distribute, resell, sublicense, publish, make publicly
+accessible or provide the Software or substantial derived portions to another
+person. The Licensee may not offer it as a hosted service, share access with
+additional operators or remove copyright and licensing notices. Private
+modifications do not expand the license grant.
+
+4. External services and trading
+The Licensee supplies and controls their own exchange account, API credentials,
+funding, infrastructure and compliance with applicable laws and service terms.
+This license grants no access to Kalshi, Coinbase, Kraken, Telegram or Discord
+and does not permit use that those services prohibit. No affiliation with or
+endorsement by those services is claimed. The Software is not investment
+advice, an execution guarantee or a promise of profitability. Models and
+simulated results may fail to generalize; trading can cause financial loss.
+
+5. Delivery, support and updates
+Only the deliverables, support obligations and updates expressly stated in
+the purchase agreement are included. A model file being supplied does not
+represent certification of its live performance. The included model card
+describes the model's actual training source and limitations.
+
+6. Warranty and liability
+To the extent permitted by applicable law and except as expressly agreed in
+writing, the Software is supplied as delivered, without a promise that it is
+error-free, continuously available, secure against every threat or suitable
+for a particular trading purpose. To that same extent, the Licensor excludes
+liability for trading losses, loss of profit, loss of data, service outages
+and indirect or consequential loss. For other recoverable loss, the aggregate
+liability cap is the license fee paid for the Software, except where the
+purchase agreement or mandatory law requires otherwise. Nothing in this
+license excludes liability that cannot legally be excluded or limits
+non-waivable consumer or other statutory rights.
+
+7. Breach and termination
+For a material breach, the Licensor may give written notice describing the
+breach and a reasonable opportunity to remedy it. If it is not remedied within
+30 days after receipt, the Licensor may terminate the license in writing.
+On termination the Licensee must stop using and delete the Software, retaining
+only records or copies required by applicable law. Any legally required rights
+and obligations survive. Payment/refund rights follow the purchase agreement
+and mandatory law; this file does not remove them.
+
+8. Contract terms and mandatory rights
+A signed purchase agreement controls any expressly negotiated conflicting
+term. The governing law and dispute terms are those validly agreed in that
+agreement; no specific jurisdiction is selected by this file. Any invalid
+provision is limited or severed only to the extent legally permitted, without
+eliminating mandatory rights. This license does not change third-party license
+grants or restrictions.
+
+The Licensor must identify itself in the commercial purchase documentation
+before a paid distribution. This source license does not replace the seller's
+order, price, tax, delivery or legally required customer disclosures.
