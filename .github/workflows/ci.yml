@@ -47,6 +47,7 @@ jobs:
       - run: python quickstart.py --check --model "$RUNNER_TEMP/ci-smoke.joblib"
       - run: kalshi-ml-run --help
       - run: kalshi-ml-observe --help
+      - run: kalshi-ml-quality --help
 
   package:
     needs: tests

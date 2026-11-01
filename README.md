@@ -298,3 +298,7 @@ Haaran julkaisutila ja jäljellä olevat datavaatimukset ovat
 Aidot Coinbase L2 -havainnot voi kerätä komennolla
 `python -m kalshi_ml.data.orderbook --output data/raw/coinbase_obi.csv --interval 4`.
 Kynttilöistä ei voi rekonstruoida historiallista OBI-piirrettä.
+
+Kerätyn aineiston laadun voi tarkistaa komennolla
+`python -m kalshi_ml.data.quality --minutes 3000`; katso
+[laaturaportin tulkinta](docs/DATA_QUALITY.md).
