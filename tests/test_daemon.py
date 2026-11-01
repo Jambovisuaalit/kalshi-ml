@@ -15,6 +15,8 @@ import pandas as pd
 from kalshi_ml.config import KalshiEnvironment, RuntimeConfig, TradingMode
 from kalshi_ml.daemon import DaemonConfig, Phase, StateStore, StatusConsole, TradingDaemon, state_identity
 from kalshi_ml.data.collector import MarketDataCollector, MarketDataError, SpotTicker
+from kalshi_ml.data.orderbook import OrderBookSnapshot
+from kalshi_ml.model.safety import VolatilityReference
 from kalshi_ml.execution.kalshi_client import (
     ActiveMarket, Balance, FillTotals, KalshiClient, MarketLifecycle, OrderBook,
     OrderResult, OrderSubmissionUnknown,
@@ -41,10 +43,11 @@ class DaemonTests(unittest.TestCase):
         self.collector = Mock(spec=MarketDataCollector)
         self.collector.fetch_ticker.side_effect = lambda **kwargs: SpotTicker(self.spot, pd.Timestamp(self.now), pd.Timestamp(self.now))
         self.collector.fetch_candles.side_effect = self.candles
+        self.collector.fetch_order_book.side_effect = lambda **kwargs: OrderBookSnapshot(pd.Timestamp(self.now), pd.Timestamp(self.now), 1.0, 1.0, 1)
         self.model = Mock()
         self.model.classes_ = np.array([0, 1])
         self.model.predict_proba.return_value = np.array([[0.3, 0.7]])
-        self.artifact = {"model": self.model, "metadata": {"inference_not_before": "2026-11-01T00:00:00+00:00", "price_mode": "OFFICIAL_PRICES"}}
+        self.artifact = {"model": self.model, "calibrator": self.model, "metadata": {"inference_not_before": "2026-11-01T00:00:00+00:00", "price_mode": "OFFICIAL_PRICES", "volatility_reference": VolatilityReference(0.0001, 0.0001, 100).metadata()}}
         self.store = StateStore(Path(self.directory.name) / "state.sqlite3", "test")
         self.addCleanup(self.store.close)
         self.daemon = self.make_daemon()
@@ -101,6 +104,54 @@ class DaemonTests(unittest.TestCase):
         self.client.send_order.assert_not_called()
         self.client.get_balance.assert_not_called()
         self.assertGreaterEqual(self.model.predict_proba.call_count, 3)
+
+    def test_volatility_outlier_blocks_entries(self) -> None:
+        self.daemon._volatility_reference = VolatilityReference(0.0001, 1e-8, 100)
+        self.daemon.poll_once()
+        self.assertIsNone(self.daemon.state.position)
+        self.assertIn("volatility", self.daemon._last_problem)
+        self.client.send_order.assert_not_called()
+
+    def test_missing_reference_or_calibrator_blocks_entries(self) -> None:
+        self.daemon._volatility_reference = None
+        self.daemon.poll_once()
+        self.assertIsNone(self.daemon.state.position)
+        self.daemon._predictor.calibrator = None
+        self.daemon.poll_once()
+        self.assertIsNone(self.daemon.state.position)
+
+    def test_obi_outage_does_not_prevent_protective_exit(self) -> None:
+        self.daemon.poll_once()
+        self.assertIsNotNone(self.daemon.state.position)
+        self.collector.fetch_order_book.side_effect = MarketDataError("fixture outage")
+        self.daemon._volatility_reference = None
+        self.spot = Decimal("99990")
+        self.daemon.poll_once()
+        self.assertIsNone(self.daemon.state.position)
+        self.assertLess(self.daemon.state.realized_pnl, 0)
+
+    def test_stale_obi_blocks_entries(self) -> None:
+        self.collector.fetch_order_book.side_effect = lambda **kwargs: OrderBookSnapshot(
+            pd.Timestamp(self.now - timedelta(seconds=11)), pd.Timestamp(self.now - timedelta(seconds=11)), 1.0, 1.0, 1)
+        self.daemon.poll_once()
+        self.assertIsNone(self.daemon.state.position)
+
+    def test_probability_threshold_alone_is_not_executable_edge(self) -> None:
+        self.model.predict_proba.return_value = np.array([[0.45, 0.55]])
+        self.no_bid = Decimal("0.34")  # YES ask = 66 cents
+        self.daemon.poll_once()
+        self.assertIsNone(self.daemon.state.position)
+        self.assertIn("edge", self.daemon._last_problem)
+
+    def test_expiry_during_live_balance_check_rechecks_obi(self) -> None:
+        self.live()
+        self.daemon.startup()
+        def balance() -> Balance:
+            self.now += timedelta(seconds=11)
+            return Balance(Decimal(1000), Decimal(0), self.now)
+        self.client.get_balance.side_effect = balance
+        self.daemon.poll_once()
+        self.client.send_order.assert_not_called()
 
     def test_delta_stop_precedes_history_and_model_failure(self) -> None:
         self.daemon.poll_once()

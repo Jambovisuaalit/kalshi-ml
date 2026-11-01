@@ -26,7 +26,12 @@ def fixture_dataset(minutes: int = 360) -> TrainingDataset:
         "low": np.minimum(opened, close) - 4, "close": close, "volume": 1.0,
     }, index=index)
     candles.attrs["source"] = "test-fixture"
-    return build_dataset(candles)
+    books = pd.DataFrame({
+        "timestamp": index + MINUTE, "received_at": index + MINUTE,
+        "bid_volume": 2.0 + np.sin(np.arange(minutes)), "ask_volume": 2.0,
+        "sequence": np.arange(minutes), "depth": 10,
+    })
+    return build_dataset(candles, order_books=books)
 
 
 class TrainerTests(unittest.TestCase):
@@ -116,7 +121,7 @@ class TrainerTests(unittest.TestCase):
             ]).to_csv(cycle_path, index=False)
             candles = load_candles(candle_path)
             cycles = load_cycle_prices(cycle_path)
-            official = build_dataset(candles, cycles)
+            official = build_dataset(candles, cycles, order_books=self.dataset.order_books)
             self.assertEqual(official.price_mode, "OFFICIAL_PRICES")
             self.assertEqual(len(official.samples), len(self.dataset.samples))
             self.assertEqual(official.samples.target.tolist(), self.dataset.samples.target.tolist())

@@ -26,6 +26,8 @@ import numpy as np
 import pandas as pd
 import requests
 
+from kalshi_ml.data.orderbook import DEPTH, OrderBookSnapshot
+
 LOGGER = logging.getLogger(__name__)
 COINBASE_URL = "https://api.exchange.coinbase.com"
 KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
@@ -289,6 +291,38 @@ class MarketDataCollector:
         frame.attrs["source"] = source
         frame.attrs["timestamp_semantics"] = "minute_open_utc"
         return frame
+
+    def fetch_order_book(self, *, max_age_sec: float = 10.0) -> OrderBookSnapshot:
+        """Read Coinbase L2 and sum BTC size at ten best levels on each side.
+
+        Both sides must provide ten unique, uncrossed levels. A stale exchange
+        timestamp, missing time, malformed size or transport error blocks OBI;
+        Kraken candles cannot substitute for Coinbase microstructure.
+        """
+        if not math.isfinite(max_age_sec) or max_age_sec <= 0:
+            raise ValueError("max_age_sec must be positive")
+        payload = self._get_json(f"{COINBASE_URL}/products/BTC-USD/book", {"level": 2})
+        received = utc_timestamp(self._clock())
+        try:
+            levels: dict[str, list[tuple[Decimal, Decimal]]] = {}
+            for side in ("bids", "asks"):
+                entries = [(Decimal(str(row[0])), Decimal(str(row[1]))) for row in payload[side]]
+                if (len(entries) < DEPTH or len({price for price, _ in entries}) != len(entries)
+                        or not all(price.is_finite() and size.is_finite() and price > 0 and size > 0 for price, size in entries)):
+                    raise ValueError("invalid depth/price/size")
+                levels[side] = sorted(entries, reverse=side == "bids")[:DEPTH]
+            if levels["bids"][0][0] >= levels["asks"][0][0]:
+                raise ValueError("crossed Coinbase book")
+            snapshot = OrderBookSnapshot(
+                utc_timestamp(pd.Timestamp(payload["time"])), received,
+                float(sum(size for _, size in levels["bids"])),
+                float(sum(size for _, size in levels["asks"])), payload["sequence"],
+            )
+            if (received - snapshot.timestamp).total_seconds() > max_age_sec:
+                raise ValueError("stale Coinbase book")
+        except (KeyError, IndexError, TypeError, ValueError, InvalidOperation, ArithmeticError) as exc:
+            raise MarketDataError("invalid or stale Coinbase order book") from exc
+        return snapshot
 
     def fetch_ticker(self, *, max_age_sec: float = 10.0) -> SpotTicker:
         """Fetch Coinbase last trade; reject stale or >2s future exchange times."""

@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from kalshi_ml.config import FEATURE_NAMES
+from kalshi_ml.data.orderbook import snapshot_records
 from kalshi_ml.data.features import (
     CyclePrices, FeatureDataError, aggregate_15m, bind_cycle_prices,
     compute_features, cycle_start,
@@ -28,11 +29,16 @@ class FeatureTests(unittest.TestCase):
         }, index=index)
         self.record = CyclePrices(self.start, 100_000.0, self.start, "kalshi:fixture")
         self.frame = bind_cycle_prices(self.frame, [self.record])
+        self.frame.attrs["order_books"] = snapshot_records(pd.DataFrame([{
+            "timestamp": self.now, "received_at": self.now,
+            "bid_volume": 3.0, "ask_volume": 1.0, "sequence": 1, "depth": 10,
+        }]))
 
     def test_exact_formulas_and_schema(self) -> None:
         """Match independently computed sample volatilities and momentum."""
         result = compute_features(self.frame, 100_010.0, self.now, self.start)
         self.assertEqual(tuple(result), FEATURE_NAMES)
+        self.assertEqual(result["obi"], 0.5)
         self.assertEqual(result["delta_usd"], 10)
         self.assertEqual(result["remaining_sec"], 570)
         closed = self.frame.loc[self.frame.index < self.now.floor("min"), "close"].iloc[-61:]

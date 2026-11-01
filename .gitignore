@@ -22,6 +22,7 @@ models/*
 !models/manifest.json
 !models/MODEL_CARD.md
 logs/*
+*.log
 !logs/.gitkeep
 .DS_Store
 *.sqlite

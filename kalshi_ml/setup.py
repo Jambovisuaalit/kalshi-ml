@@ -14,6 +14,10 @@ import sys
 import venv
 
 
+class ModelReadinessError(RuntimeError):
+    """Dependencies may be ready while a nine-feature trading artifact is not."""
+
+
 def _resource_root(root: Path) -> Path:
     if (root / ".env.example").is_file():
         return root
@@ -44,7 +48,7 @@ def initialize(root: Path) -> None:
                 shutil.copy2(source / "models" / filename, target)
 
 
-def check_system(root: Path, *, network: bool = False) -> None:
+def check_system(root: Path, *, network: bool = False, model_path: Path | None = None) -> None:
     """Check dependency pins, Pydantic config and trusted bundled model; no orders."""
     from kalshi_ml.config import FEATURE_NAMES, KalshiEnvironment, TradingMode, load_settings
     from kalshi_ml.execution.kalshi_client import ClientPolicy, KalshiClient, load_signing_key
@@ -64,7 +68,10 @@ def check_system(root: Path, *, network: bool = False) -> None:
     manifest = json.loads((root / "models/manifest.json").read_text())
     if manifest["model"] != path.name or hashlib.sha256(path.read_bytes()).hexdigest() != manifest["sha256"]:
         raise ValueError("bundled model checksum mismatch")
-    predictor = RealtimePredictor.from_file(path)
+    try:
+        predictor = RealtimePredictor.from_file(model_path if model_path is not None else path)
+    except ValueError as exc:
+        raise ModelReadinessError("Trading disabled: missing/incompatible nine-feature calibrated model (the bundled eight-feature model is legacy). Record real Coinbase OBI, train with --obi-csv, then select the new artifact with --model.") from exc
     features = dict.fromkeys(FEATURE_NAMES, 0.0)
     features.update(remaining_sec=600.0, vol_15m=0.01, vol_60m=0.02, vol_ratio=0.5)
     probability = predictor.predict_yes(features)
@@ -93,6 +100,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--check", action="store_true", help="read-only local checks; do not install or initialize")
+    parser.add_argument("--model", type=Path, help="trusted nine-feature calibrated artifact to check")
     parser.add_argument("--network", action="store_true", help="also read the public production market endpoint")
     args = parser.parse_args()
     if sys.version_info < (3, 11):
@@ -110,12 +118,17 @@ def main() -> int:
                 subprocess.run([str(python), "-m", "pip", "install", "-r", str(root / "requirements.txt")], check=True, cwd=root)
                 subprocess.run([str(python), "-m", "pip", "install", "--no-deps", "-e", str(root)], check=True, cwd=root)
                 command = [str(python), "-m", "kalshi_ml.setup", "--check", "--root", str(root)]
+                if args.model is not None:
+                    command.extend(["--model", str(args.model.resolve())])
                 if args.network:
                     command.append("--network")
                 return subprocess.run(command, cwd=root, check=False).returncode
-        check_system(root, network=args.network)
+        check_system(root, network=args.network, model_path=args.model)
         print("Start paper mode: kalshi-ml-run --mode paper (or .venv/bin/python main.py --mode paper)")
         return 0
+    except ModelReadinessError as exc:
+        print(str(exc))
+        return 2
     except (ValueError, TypeError, OSError, RuntimeError, ImportError, KeyError, importlib.metadata.PackageNotFoundError, subprocess.CalledProcessError) as exc:
         print(f"Setup/check failed: {type(exc).__name__}. Check Python, dependency lock, .env and model files; secrets are not printed.")
         return 2

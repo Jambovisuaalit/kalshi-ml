@@ -31,6 +31,7 @@ FEATURE_NAMES: Final[tuple[str, ...]] = (
     "vol_ratio",
     "mom_1m",
     "mom_3m",
+    "obi",
 )
 """Ordered model input schema; training and inference must use this order."""
 
@@ -86,9 +87,20 @@ class StrategyConfig:
     entry_max_cents: int = 66
     take_profit_cents: int = 88
     hard_stop_cents: int = 14
+    volatility_sigma_limit: Decimal = Decimal("2")
+    minimum_edge_cents: Decimal = Decimal("1")
+    entry_fee_buffer_cents: Decimal = Decimal("2")
+    exit_fee_buffer_cents: Decimal = Decimal("2")
 
     def __post_init__(self) -> None:
         """Fail at construction when thresholds are invalid or contradictory."""
+        for name in ("volatility_sigma_limit", "minimum_edge_cents", "entry_fee_buffer_cents", "exit_fee_buffer_cents"):
+            value = getattr(self, name)
+            _require_decimal(name, value)
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.volatility_sigma_limit > 2:
+            raise ValueError("volatility_sigma_limit may tighten, but not exceed two sigma")
         for name in ("entry_min_remaining_sec", "entry_max_remaining_sec"):
             _require_int(name, getattr(self, name), 1, CONTRACT_DURATION_SEC - 1)
         if self.entry_min_remaining_sec > self.entry_max_remaining_sec:
