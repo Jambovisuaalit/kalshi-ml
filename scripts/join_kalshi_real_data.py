@@ -158,7 +158,6 @@ def main():
             "Model predictions cannot be reconstructed without time-safe historical model evidence.",
             "No executable EV, Brier score, or realized model PnL can be claimed from this report."]}
     report_path=output.with_suffix(".audit.json")
-    report_path.write_text(json.dumps(report,indent=2,ensure_ascii=False)+"
-")
+    report_path.write_text(json.dumps(report,indent=2,ensure_ascii=False)+chr(10))
     print(json.dumps({"csv":str(output),"audit":str(report_path),**report},indent=2,ensure_ascii=False))
 if __name__=="__main__":main()
