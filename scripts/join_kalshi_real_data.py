@@ -57,7 +57,9 @@ def main():
     issues=Counter()
     for m in read_jsonl(root/"settled_markets.jsonl"):
         t=m.get("ticker")
-        if not t:\n            issues["market_without_ticker"]+=1\n            continue
+        if not t:
+            issues["market_without_ticker"]+=1
+            continue
         if t in markets:
             if m!=markets[t]:issues["conflicting_market_duplicates"]+=1
             else:issues["duplicate_markets"]+=1
@@ -70,7 +72,8 @@ def main():
             t=tr.get("ticker")
             ts=timestamp(tr.get("created_time") or tr.get("created_at") or tr.get("ts"))
             if not t or pd.isna(ts):
-                issues["trade_missing_ticker_or_timestamp"]+=1\n                continue
+                issues["trade_missing_ticker_or_timestamp"]+=1
+                continue
             trade_id=tr.get("trade_id") or tr.get("id")
             if trade_id:
                 key=(t,str(trade_id))
@@ -155,6 +158,7 @@ def main():
             "Model predictions cannot be reconstructed without time-safe historical model evidence.",
             "No executable EV, Brier score, or realized model PnL can be claimed from this report."]}
     report_path=output.with_suffix(".audit.json")
-    report_path.write_text(json.dumps(report,indent=2,ensure_ascii=False)+"\n")
+    report_path.write_text(json.dumps(report,indent=2,ensure_ascii=False)+"
+")
     print(json.dumps({"csv":str(output),"audit":str(report_path),**report},indent=2,ensure_ascii=False))
 if __name__=="__main__":main()
