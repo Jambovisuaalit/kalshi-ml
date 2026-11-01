@@ -45,7 +45,7 @@ class MarketValidationTests(unittest.TestCase):
         data=sample();data.loc[1,"settlement_yes"]=0
         with self.assertRaisesRegex(ValueError,"contradictory"):self.validate(data)
     def test_reject_complementary_cross(self):
-        data=sample();data.loc[0,"no_bid_cents"]=55
+        data=sample();data.loc[0,"no_bid_cents"]=51;data.loc[0,"no_ask_cents"]=52
         with self.assertRaisesRegex(ValueError,"inconsistent"):self.validate(data)
     def test_reject_duplicate_snapshot(self):
         data=sample();data.loc[1,"observed_at"]=data.loc[0,"observed_at"]
