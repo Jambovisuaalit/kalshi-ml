@@ -676,6 +676,16 @@ class KalshiClient:
             raise InvalidResponseError("crossed single-book prices")
         return OrderBook(ticker, _utc(self._clock()), yes, yes_size, no, no_size)
 
+    def get_public_market_response(self, ticker: str) -> dict[str, Any]:
+        """Return the unmodified public market JSON for auditable observations."""
+        _identifier(ticker, "ticker")
+        return self._request("GET", f"{API_ROOT}/markets/{ticker}", authenticated=False)
+
+    def get_public_orderbook_response(self, ticker: str) -> dict[str, Any]:
+        """Return the unmodified public book JSON; no account access is needed."""
+        _identifier(ticker, "ticker")
+        return self._request("GET", f"{API_ROOT}/markets/{ticker}/orderbook", authenticated=False)
+
     def get_market_lifecycle(self, ticker: str) -> MarketLifecycle:
         """Read an official payout; never infer settlement from Coinbase spot."""
         _identifier(ticker, "ticker")

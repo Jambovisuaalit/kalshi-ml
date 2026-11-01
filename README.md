@@ -284,3 +284,10 @@ asetuksia, avaimia, SQLite-tiedostoja, raakadataa, lokeja tai virtuaaliympärist
 Lisenssinantaja yksilöidään ostosopimuksessa/laskulla, koska virallista nimeä
  ei ole vielä valittu. LICENSE ei korvaa myyjän toimitus-, hinta-, vero- tai
 asiakastietoja. Kolmansien osapuolten lisenssit säilyvät erillisinä.
+
+## Kalshin tarjous- ja selvityshavaintojen keruu
+
+Lue [havaintolokin ohje](docs/KALSHI_OBSERVATIONS.md). Käynnistä julkisen,
+vain lukuja tekevän rajapinnan kerääjä komennolla
+`python -m kalshi_ml.data.kalshi_observer --environment PROD --output data/raw/kalshi`.
+Valitsin `--once` tekee yhden kierroksen. Paikallinen loki on Gitin ohittama.
