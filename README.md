@@ -188,6 +188,10 @@ ratkaisematonta siirtoa uudella UUID:llä. Kalshin määräyksikkö on centicent
 
 ## Koulutus ja raportointi
 
+Erillinen neliluokkainen poistumien tutkimuslabeler ja sen proxy-rajoitukset:
+[MULTICLASS_LABELS.md](docs/MULTICLASS_LABELS.md). Sen targetit eivät sovellu
+nykyisen binäärisen P(YES)-mallin koulutukseen.
+
 ```sh
 # Kerää ensin oikeaa, koulutuskynttilöiden kanssa päällekkäistä OBI-historiaa:
 python -m kalshi_ml.data.orderbook --output data/raw/coinbase_obi.csv

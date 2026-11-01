@@ -91,6 +91,9 @@ def train_model(dataset: TrainingDataset, *, max_iter: int = 150, random_state: 
     """
     if type(max_iter) is not int or max_iter <= 0:
         raise ValueError("max_iter must be a positive integer")
+    if (dataset.samples.attrs.get("target_schema") == "triple-barrier-four-class-v1"
+            or "target_schema" in dataset.samples and not dataset.samples.target_schema.eq("binary-settlement-v1").all()):
+        raise ValueError("the binary P(YES) trainer cannot consume side-conditioned triple-barrier targets")
     if not set(dataset.samples.target.unique()) <= {0, 1}:
         raise ValueError("targets must be binary 0/1")
     train, test = chronological_split(dataset.samples)
