@@ -13,8 +13,10 @@ import csv
 from dataclasses import asdict, dataclass
 import fcntl
 import math
+import os
 from pathlib import Path
 import time
+from typing import TextIO
 
 import pandas as pd
 
@@ -98,6 +100,36 @@ def imbalance_at(frame: pd.DataFrame | Sequence[OrderBookSnapshot], decision: pd
     return row.imbalance
 
 
+def _resume_tail(stream: TextIO) -> OrderBookSnapshot | None:
+    """Validate an existing CSV before appending; return its latest snapshot."""
+    stream.seek(0)
+    reader = csv.DictReader(stream)
+    expected = list(OrderBookSnapshot.__dataclass_fields__)
+    if reader.fieldnames is None:
+        return None
+    if reader.fieldnames != expected:
+        raise ValueError("incompatible existing OBI CSV header")
+    last: OrderBookSnapshot | None = None
+    for row in reader:
+        if set(row) != set(expected) or any(value is None for value in row.values()):
+            raise ValueError("incomplete existing OBI CSV row")
+        try:
+            snapshot = OrderBookSnapshot(
+                aware(row["timestamp"]), aware(row["received_at"]),
+                float(row["bid_volume"]), float(row["ask_volume"]),
+                int(row["sequence"]), int(row["depth"]),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid existing OBI CSV row") from exc
+        if last is not None and (
+            snapshot.sequence <= last.sequence or snapshot.timestamp < last.timestamp
+            or snapshot.received_at <= last.received_at
+        ):
+            raise ValueError("existing OBI observations are out of order")
+        last = snapshot
+    return last
+
+
 def main() -> int:
     """Record public Coinbase books to CSV; never submit exchange orders."""
     from kalshi_ml.data.collector import MarketDataCollector, MarketDataError
@@ -113,22 +145,30 @@ def main() -> int:
     try:
         with args.output.open("a+", newline="") as stream, MarketDataCollector() as collector:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            stream.seek(0)
             expected = list(OrderBookSnapshot.__dataclass_fields__)
-            first = stream.readline().strip()
-            if first and next(csv.reader([first])) != expected:
-                raise ValueError("incompatible existing OBI CSV header")
+            last = _resume_tail(stream)
             stream.seek(0, 2)
             writer = csv.DictWriter(stream, fieldnames=expected)
-            if not first:
+            if stream.tell() == 0:
                 writer.writeheader()
+                stream.flush()
+                os.fsync(stream.fileno())
             count = 0
             while args.samples == 0 or count < args.samples:
                 begun = time.monotonic()
                 try:
-                    writer.writerow(asdict(collector.fetch_order_book()))
-                    stream.flush()
-                    count += 1
+                    snapshot = collector.fetch_order_book()
+                    if last is not None and (
+                        snapshot.sequence <= last.sequence or snapshot.timestamp < last.timestamp
+                        or snapshot.received_at <= last.received_at
+                    ):
+                        print("Coinbase book sequence/time did not advance; snapshot skipped", flush=True)
+                    else:
+                        writer.writerow(asdict(snapshot))
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                        last = snapshot
+                        count += 1
                 except MarketDataError:
                     print("Coinbase book unavailable; no synthetic snapshot written", flush=True)
                 time.sleep(max(0, args.interval - (time.monotonic() - begun)))

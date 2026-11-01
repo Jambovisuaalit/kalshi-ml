@@ -294,3 +294,7 @@ Valitsin `--once` tekee yhden kierroksen. Paikallinen loki on Gitin ohittama.
 
 Haaran julkaisutila ja jäljellä olevat datavaatimukset ovat
 [julkaisuvalmiuden yhteenvedossa](docs/RELEASE_READINESS.md).
+
+Aidot Coinbase L2 -havainnot voi kerätä komennolla
+`python -m kalshi_ml.data.orderbook --output data/raw/coinbase_obi.csv --interval 4`.
+Kynttilöistä ei voi rekonstruoida historiallista OBI-piirrettä.

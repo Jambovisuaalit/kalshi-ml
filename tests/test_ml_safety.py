@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from decimal import Decimal
+import io
 from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
@@ -13,7 +14,7 @@ import requests
 from kalshi_ml.config import FEATURE_NAMES, StrategyConfig
 from kalshi_ml.data.collector import MarketDataCollector, MarketDataError
 from kalshi_ml.data.features import intracycle_volatility
-from kalshi_ml.data.orderbook import OrderBookSnapshot, imbalance_at, snapshot_records, validate_snapshots
+from kalshi_ml.data.orderbook import OrderBookSnapshot, _resume_tail, imbalance_at, snapshot_records, validate_snapshots
 from kalshi_ml.model.dataset import TrainingDataset, build_dataset
 from kalshi_ml.model.inference import RealtimePredictor
 from kalshi_ml.model.safety import VolatilityReference, net_edge_cents
@@ -113,6 +114,17 @@ class SafetyTests(unittest.TestCase):
             build_dataset(dataset.candles)
         with self.assertRaises(ValueError):
             load_artifact(Path("models/hgb_btc15m_prod.joblib"))
+
+    def test_obi_recorder_resume_rejects_partial_or_nonmonotonic_csv(self) -> None:
+        header = "timestamp,received_at,bid_volume,ask_volume,sequence,depth\n"
+        first = "2026-11-01T12:00:00Z,2026-11-01T12:00:01Z,1,2,10,10\n"
+        later = "2026-11-01T12:00:04Z,2026-11-01T12:00:05Z,2,1,11,10\n"
+        self.assertEqual(_resume_tail(io.StringIO(header + first + later)).sequence, 11)
+        self.assertIsNone(_resume_tail(io.StringIO("")))
+        for bad in (header + first + first, header + first + "incomplete,row\n",
+                    header + first + later.replace(",11,", ",9,")):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                _resume_tail(io.StringIO(bad))
 
     def test_inference_applies_calibrator_instead_of_raw_model(self) -> None:
         model, calibrator = Mock(), Mock()

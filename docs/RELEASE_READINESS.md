@@ -17,6 +17,11 @@ claim profitable or production-ready trading.
 
 1. Collect genuine, timestamped Coinbase depth snapshots long enough to cover
    the intended chronological training, calibration and out-of-sample periods.
+   Start or resume the read-only recorder with
+   `python -m kalshi_ml.data.orderbook --output data/raw/coinbase_obi.csv --interval 4`.
+   It holds an exclusive file lock, checks existing rows before appending and
+   skips repeated/regressed book sequence or time. `wc -l data/raw/coinbase_obi.csv`
+   shows the local row count (including the header); the file is Git-ignored.
 2. Train the nine-feature artifact from those snapshots, retain its provenance,
    and pass `quickstart.py --check --model <trusted-artifact>`.
 3. Join frozen pre-settlement predictions to recorded Kalshi quote observations
