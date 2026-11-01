@@ -57,7 +57,7 @@ def main():
     issues=Counter()
     for m in read_jsonl(root/"settled_markets.jsonl"):
         t=m.get("ticker")
-        if not t:issues["market_without_ticker"]+=1;continue
+        if not t:\n            issues["market_without_ticker"]+=1\n            continue
         if t in markets:
             if m!=markets[t]:issues["conflicting_market_duplicates"]+=1
             else:issues["duplicate_markets"]+=1
@@ -70,7 +70,7 @@ def main():
             t=tr.get("ticker")
             ts=timestamp(tr.get("created_time") or tr.get("created_at") or tr.get("ts"))
             if not t or pd.isna(ts):
-                issues["trade_missing_ticker_or_timestamp"]+=1;continue
+                issues["trade_missing_ticker_or_timestamp"]+=1\n                continue
             trade_id=tr.get("trade_id") or tr.get("id")
             if trade_id:
                 key=(t,str(trade_id))
