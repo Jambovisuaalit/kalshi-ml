@@ -40,7 +40,9 @@ jobs:
           sys.path.insert(0, 'tests')
           from test_trainer import fixture_dataset
           from kalshi_ml.model.trainer import save_artifact, train_model
-          save_artifact(train_model(fixture_dataset(), max_iter=5), Path(os.environ['RUNNER_TEMP']) / 'ci-smoke.joblib')
+          path = Path(os.environ['RUNNER_TEMP']) / 'ci-smoke.joblib'
+          save_artifact(train_model(fixture_dataset(), max_iter=5), path)
+          path.chmod(0o644)  # Synthetic fixture only; readable by the non-root smoke container.
           PY
       - run: python quickstart.py --check --model "$RUNNER_TEMP/ci-smoke.joblib"
       - run: kalshi-ml-run --help
@@ -87,7 +89,9 @@ jobs:
           sys.path.insert(0, 'tests')
           from test_trainer import fixture_dataset
           from kalshi_ml.model.trainer import save_artifact, train_model
-          save_artifact(train_model(fixture_dataset(), max_iter=5), Path(os.environ['RUNNER_TEMP']) / 'ci-smoke.joblib')
+          path = Path(os.environ['RUNNER_TEMP']) / 'ci-smoke.joblib'
+          save_artifact(train_model(fixture_dataset(), max_iter=5), path)
+          path.chmod(0o644)  # Synthetic fixture only; readable by the non-root smoke container.
           PY
       - run: docker build -f deploy/Dockerfile -t kalshi-ml:ci .
       - run: docker run --rm --network none --read-only --tmpfs /tmp -v "$RUNNER_TEMP/ci-smoke.joblib:/app/models/ci-smoke.joblib:ro" kalshi-ml:ci kalshi-ml-quickstart --check --model /app/models/ci-smoke.joblib
