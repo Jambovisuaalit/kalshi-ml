@@ -1,16 +1,30 @@
-# 2025 BTC15M SPOT_PROXY research backtest
+# 2025 causal SPOT_PROXY backtest v2
 
-Run from repo root with Python 3.12:
+This is a **research simulation**, not observed Kalshi historical order-book data or realized returns.
 
-```sh
+## Run
+
+```bash
 python -m pip install --only-binary=:all: -r requirements.txt
-python scripts/backtest_2025.py
+python scripts/backtest_2025.py --full
 ```
 
-The script downloads 2024-12 and 2025 BTCUSDT 1m candles from Binance public monthly archives, verifies published checksums, trains a **new model entirely on 2024-12** and tests the 525600 minutes of 2025. It intentionally DOES NOT load `models/hgb_btc15m_prod.joblib`, which was trained in 2026.
+Downloads checksum-verified Binance BTCUSDT 1-minute bars (December 2024 + 2025), trains HGB only on December 2024 and holds it fixed for 2025. 2026 production artifacts are not used.
 
-Scenarios: OHLC paths OLHC and OHLC; synthetic spread 2c/slippage 0c or spread 4c/slippage 1c; fee 2c per executed side, single contract, 1 entry per 15-minute cycle.
+## Look-ahead prevention
 
-Reports: `reports/backtest-2025/summary.json` and per-scenario trade CSVs.
+Decisions are at minute start, using only the prior **completed** minute close and lagged volatility. Active-minute OHLC extremes are never used. No intraminute stop claims are possible with this data resolution. Contract strike and settlement remain **spot proxies**, not official Kalshi BRTI.
 
-**Research-only:** Synthetic normal-CDF YES/NO quotes and BTCUSDT spot-proxy outcomes are NOT official Kalshi KXBTC15M historical quotes, BRTI, fill volume or settlement. Do not interpret the output as live-trading returns. Full-year KXBTC15M history does not cover all of 2025; verify actual availability before claims.
+## Experiment matrix
+
+48 configurations: Delta-Stop on/off × take-profit 75/80/85/88 cents × hard stop 10/14/20 cents × (spread 2 cents/slippage 0 or spread 4 cents/slippage 1). Assumed fee 2 cents per side. One contract per cycle.
+
+Two parallel ledgers: unconstrained signal-level PnL (may be negative; not a real account) and funded $1,000 execution (skips unaffordable entries). Both are simulations. Compare signal-level edge without conflating insolvency.
+
+Outputs in `reports/backtest-2025/`:
+- `scenario_summary.csv` — overall PnL, win rate, Profit Factor, global drawdown, funded cash skips.
+- `monthly_metrics.csv` — monthly PnL, trades, Profit Factor, drawdown (global-peak drawdown observed within month).
+- `unconstrained_trades.csv` — audit-level exit reasons and per-trade PnL.
+- `summary.json` — manifest, assumptions, and scenario summaries.
+
+**Limitations:** 1-minute data cannot validate second-level Delta-Stop; no Kalshi book, queue position, actual fees, executable fills, or official settlement. Parameter-grid results are exploratory: do not pick a winning combination on 2025 and then call that same period an independent out-of-sample test. Confirm on a later untouched holdout and actual Kalshi history before live use.
