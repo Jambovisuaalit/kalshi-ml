@@ -19,6 +19,7 @@ kalshi-ml-quickstart = "kalshi_ml.setup:main"
 kalshi-ml-train = "kalshi_ml.model.trainer:main"
 kalshi-ml-transfer = "kalshi_ml.execution.collateral:main"
 kalshi-ml-performance = "kalshi_ml.storage.journal:performance_main"
+kalshi-ml-observe = "kalshi_ml.data.kalshi_observer:main"
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

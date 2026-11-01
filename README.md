@@ -291,3 +291,6 @@ Lue [havaintolokin ohje](docs/KALSHI_OBSERVATIONS.md). Käynnistä julkisen,
 vain lukuja tekevän rajapinnan kerääjä komennolla
 `python -m kalshi_ml.data.kalshi_observer --environment PROD --output data/raw/kalshi`.
 Valitsin `--once` tekee yhden kierroksen. Paikallinen loki on Gitin ohittama.
+
+Haaran julkaisutila ja jäljellä olevat datavaatimukset ovat
+[julkaisuvalmiuden yhteenvedossa](docs/RELEASE_READINESS.md).

@@ -9,14 +9,16 @@ credentials, model predictions, or inferred settlements are used.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
+import fcntl
 import os
 from pathlib import Path
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from kalshi_ml.config import KalshiEnvironment
 from kalshi_ml.execution.kalshi_client import (
@@ -113,6 +115,20 @@ class ObservationJournal:
     def path(self) -> Path:
         return self.directory / "kalshi_observations.jsonl"
 
+    @contextmanager
+    def exclusive(self) -> Iterator[None]:
+        """Allow one writer per directory for the whole collector lifetime."""
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.directory / "kalshi_observations.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("another observer already owns this journal") from None
+            yield
+        finally:
+            os.close(fd)
+
     def append(self, event: Mapping[str, object]) -> None:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         encoded = (json.dumps(event, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
@@ -125,8 +141,8 @@ class ObservationJournal:
         finally:
             os.close(fd)
 
-    def pending_tickers(self) -> set[str]:
-        """Resume unsettled observed contracts after a process restart."""
+    def pending_tickers(self, environment: KalshiEnvironment, series_ticker: str) -> set[str]:
+        """Resume only same-environment/series contracts after a restart."""
         if not self.path.exists():
             return set()
         observed: set[str] = set()
@@ -136,6 +152,10 @@ class ObservationJournal:
                 event = json.loads(line)
                 if not isinstance(event, dict) or not isinstance(event.get("ticker"), str):
                     raise ValueError("invalid observation journal")
+                if event.get("schema") != "kalshi-public-observation-v1" or event.get("environment") != environment.value:
+                    raise ValueError("journal schema/environment mismatch; use another output directory")
+                if not event["ticker"].startswith(series_ticker + "-"):
+                    raise ValueError("journal series mismatch; use another output directory")
                 if event.get("kind") == "market":
                     observed.add(event["ticker"])
                 elif event.get("kind") == "settlement":
@@ -154,7 +174,7 @@ class KalshiObserver:
         if not series_ticker or not series_ticker.isalnum():
             raise ValueError("invalid series ticker")
         self.client, self.journal, self.series_ticker, self.now = client, journal, series_ticker, now
-        self.pending = journal.pending_tickers()
+        self.pending = journal.pending_tickers(client.environment, series_ticker)
         self.base_url = BASE_URLS[client.environment]
 
     def _read(self, ticker: str, kind: str) -> tuple[dict[str, Any], dict[str, object]]:
@@ -163,6 +183,8 @@ class KalshiObserver:
         body = (self.client.get_public_orderbook_response(ticker) if kind == "orderbook"
                 else self.client.get_public_market_response(ticker))
         received = _stamp(self.now)
+        if received < started:
+            raise ValueError("observer clock moved backwards during an API request")
         return body, {
             "schema": "kalshi-public-observation-v1", "kind": kind, "ticker": ticker,
             "request_started_at": started, "received_at": received,
@@ -174,6 +196,7 @@ class KalshiObserver:
         """Observe the active book, then poll pending contracts for settlement."""
         quotes = settlements = 0
         active = self.client.get_active_15m_market(self.series_ticker)
+        verified_open_ticker: str | None = None
         if active is not None:
             ticker = active.ticker
             if not ticker.startswith(self.series_ticker + "-"):
@@ -185,6 +208,7 @@ class KalshiObserver:
             if row.get("exchange_index", active.exchange_index) != active.exchange_index:
                 raise InvalidResponseError("market shard changed")
             if row.get("status") in {"open", "active"} and row.get("result") in {None, ""}:
+                verified_open_ticker = ticker
                 self.journal.append(event)
                 self.pending.add(ticker)
                 book, book_event = self._read(ticker, "orderbook")
@@ -192,6 +216,8 @@ class KalshiObserver:
                 self.journal.append(book_event)
                 quotes += 1
         for ticker in sorted(self.pending):
+            if ticker == verified_open_ticker:
+                continue  # The same response just confirmed this contract is still open.
             body, event = self._read(ticker, "market")
             row = body.get("market")
             if not isinstance(row, dict) or row.get("ticker") != ticker:
@@ -201,7 +227,17 @@ class KalshiObserver:
                 continue
             event["kind"] = "settlement"
             event["yes_payout_dollars"], event["result"] = result
-            event["official_settlement_ts"] = row.get("settlement_ts")
+            settlement_ts = row.get("settlement_ts")
+            if settlement_ts is not None:
+                if not isinstance(settlement_ts, str):
+                    raise InvalidResponseError("invalid official settlement timestamp")
+                try:
+                    parsed = datetime.fromisoformat(settlement_ts.replace("Z", "+00:00"))
+                except ValueError:
+                    raise InvalidResponseError("invalid official settlement timestamp") from None
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    raise InvalidResponseError("official settlement timestamp lacks timezone")
+            event["official_settlement_ts"] = settlement_ts
             self.journal.append(event)
             self.pending.remove(ticker)
             settlements += 1
@@ -219,8 +255,9 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.poll_sec <= 3600:
         parser.error("--poll-sec must be between 1 and 3600")
     try:
-        with KalshiClient(environment=KalshiEnvironment(args.environment)) as client:
-            observer = KalshiObserver(client, ObservationJournal(args.output))
+        journal = ObservationJournal(args.output)
+        with journal.exclusive(), KalshiClient(environment=KalshiEnvironment(args.environment)) as client:
+            observer = KalshiObserver(client, journal)
             while True:
                 quotes, settlements = observer.observe_once()
                 print(f"quotes={quotes} settlements={settlements} pending={len(observer.pending)}", flush=True)
@@ -229,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(args.poll_sec)
     except KeyboardInterrupt:
         return 0
-    except (KalshiError, OSError, ValueError) as exc:
+    except (KalshiError, OSError, RuntimeError, ValueError) as exc:
         parser.exit(2, f"observer stopped: {type(exc).__name__}: {exc}\n")
 
 
