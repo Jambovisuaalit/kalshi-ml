@@ -35,7 +35,7 @@ class MarketValidationTests(unittest.TestCase):
         self.assertEqual(report["distinct_contracts"],2)
         self.assertEqual(report["quote_snapshots"],3)
         self.assertEqual(len(decisions),2)
-        self.assertEqual(len(bins.contracts),2)
+        self.assertEqual(int(bins.contracts.sum()),2)
         self.assertEqual(decisions.iloc[0].observed_at,pd.Timestamp("2025-12-10T12:00Z"))
     def test_reject_future_observation(self):
         data=sample()
