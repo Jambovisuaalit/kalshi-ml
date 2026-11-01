@@ -28,14 +28,18 @@ def timestamp(value):
         return pd.to_datetime(value,unit=unit,utc=True,errors="coerce")
     return pd.to_datetime(value,utc=True,errors="coerce")
 
-def cents(value):
+def price_cents(value):
+    """Normalize Kalshi dollar-denominated price quotes to cents.
+
+    Candle OHLC values are USD dollars, e.g. 0.4200 means 42 cents.
+    Never guess between incompatible units; reject prices outside $0..$1.
+    """
     if isinstance(value,dict):
-        # Kalshi candle price fields are nested OHLC objects.
-        value=value.get("close")
+        value=value.get("close_dollars",value.get("close"))
     if value is None or isinstance(value,bool):return None
     try:
         number=float(value)
-        return number if math.isfinite(number) and 0<=number<=100 else None
+        return round(number*100,6) if math.isfinite(number) and 0<=number<=1 else None
     except (ValueError,TypeError):return None
 
 def candle_ticker(envelope):
@@ -97,12 +101,13 @@ def main():
             seen_candles.add(key)
             close_time=timestamp(m.get("close_time"))
             open_time=timestamp(m.get("open_time") or m.get("created_time"))
-            # end_period_ts is an interval label; never treat it as an
-            # independently executable snapshot at this timestamp.
-            bid=cents(c.get("yes_bid"));ask=cents(c.get("yes_ask"))
+            # end_period_ts labels the candle's end. A candle close is known
+            # only after its interval, never a synchronous executable quote.
+            start_ts=ts-pd.Timedelta(minutes=1) if c.get("end_period_ts") is not None else pd.NaT
+            bid=price_cents(c.get("yes_bid"));ask=price_cents(c.get("yes_ask"))
             # Do not derive the NO side from YES quotes: this is a separate
             # historical observation requirement.
-            no_bid=cents(c.get("no_bid"));no_ask=cents(c.get("no_ask"))
+            no_bid=price_cents(c.get("no_bid"));no_ask=price_cents(c.get("no_ask"))
             valid_quotes=(bid is not None and ask is not None and bid<=ask)
             if bid is not None and ask is not None and bid>ask:
                 issues["crossed_yes_candles"]+=1
@@ -110,30 +115,36 @@ def main():
             if no_bid is None or no_ask is None:
                 issues["missing_no_quotes"]+=1
             if pd.notna(close_time) and ts>close_time:
-                issues["candle_after_close"]+=1
-            if pd.notna(open_time) and ts<open_time-pd.Timedelta(minutes=1):
-                issues["candle_before_open"]+=1
-            tr=trade_by_minute.get((t,ts.floor("min")),{"count":0,"volume":0.0})
+                issues["candle_end_label_after_close"]+=1
+            if pd.notna(close_time) and pd.notna(start_ts) and start_ts>=close_time:
+                issues["candle_interval_not_tradeable"]+=1
+            if pd.notna(open_time) and pd.notna(start_ts) and start_ts<open_time:
+                issues["candle_interval_before_open"]+=1
+            # Match trades to the half-open candle interval [end-60s, end).
+            # This is an interval aggregate, not a fill at its close price.
+            trade_minute=start_ts.floor("min") if pd.notna(start_ts) else ts.floor("min")
+            tr=trade_by_minute.get((t,trade_minute),{"count":0,"volume":0.0})
             rows.append({
                 "ticker":t,"candle_time_utc":ts.isoformat(),
+                "candle_period_start_utc":start_ts.isoformat() if pd.notna(start_ts) else "",
                 "market_open_utc":open_time.isoformat() if pd.notna(open_time) else "",
                 "market_close_utc":close_time.isoformat() if pd.notna(close_time) else "",
                 "official_result":m.get("result"),
                 "yes_bid_close_cents":bid,"yes_ask_close_cents":ask,
                 "no_bid_close_cents":no_bid,"no_ask_close_cents":no_ask,
                 "yes_spread_cents":round(ask-bid,4) if valid_quotes else None,
-                "trade_count_same_minute":tr["count"],
-                "trade_volume_same_minute":tr["volume"],
+                "trade_count_in_interval":tr["count"],
+                "trade_volume_in_interval":tr["volume"],
                 "model_p_yes":None,
                 "model_status":"MISSING_HISTORICAL_PRE_SETTLEMENT_INFERENCE",
                 "quote_type":"HISTORICAL_MINUTE_CANDLE_NOT_EXECUTABLE_SNAPSHOT",
                 "quote_valid":valid_quotes,
             })
             candles_per_market[t]+=1
-    columns=["ticker","candle_time_utc","market_open_utc","market_close_utc",
+    columns=["ticker","candle_time_utc","candle_period_start_utc","market_open_utc","market_close_utc",
         "official_result","yes_bid_close_cents","yes_ask_close_cents",
         "no_bid_close_cents","no_ask_close_cents","yes_spread_cents",
-        "trade_count_same_minute","trade_volume_same_minute","model_p_yes",
+        "trade_count_in_interval","trade_volume_in_interval","model_p_yes",
         "model_status","quote_type","quote_valid"]
     output.parent.mkdir(parents=True,exist_ok=True)
     pd.DataFrame(rows,columns=columns).sort_values(
@@ -144,7 +155,7 @@ def main():
         "markets":len(markets),"markets_with_candles":len(candles_per_market),
         "markets_without_candles":sorted(set(markets)-set(candles_per_market)),
         "candle_rows":len(rows),"distinct_trade_ids":len(unique_trades),
-        "trade_observations_joined_by_minute":sum(r["trade_count_same_minute"] for r in rows),
+        "trade_observations_joined_by_candle_interval":sum(r["trade_count_in_interval"] for r in rows),
         "result_counts":dict(Counter(str(m.get("result")) for m in markets.values())),
         "valid_yes_quote_candles":sum(r["quote_valid"] for r in rows),
         "yes_spread_p50_cents":float(pd.Series(spreads).median()) if spreads else None,
@@ -153,7 +164,9 @@ def main():
         "issues":dict(issues),
         "limitations":[
             "Candle OHLC closes are interval aggregates, not point-in-time executable bids/asks.",
-            "Trades are grouped by ticker and minute; candle time label may refer to interval end.",
+            "Trade counts use the half-open [end_period_ts-60s, end_period_ts) candle interval; verify end-period semantics against raw timestamps.",
+            "Prices are USD-denominated in source and normalized to cents in this audit.",
+            "Candle-end labels after market close do not alone prove that trades occurred after close.",
             "NO quotes are never imputed from YES prices.",
             "Model predictions cannot be reconstructed without time-safe historical model evidence.",
             "No executable EV, Brier score, or realized model PnL can be claimed from this report."]}
