@@ -69,7 +69,6 @@ jobs:
       - run: docker run --rm --network none --read-only --tmpfs /tmp kalshi-ml:ci kalshi-ml-run --help
 
   backtest_2025:
-    if: github.ref == 'refs/heads/research/backtest-2025-spot-proxy'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
