@@ -1,7 +1,7 @@
 # kalshi-ml
 
 Kalshin KXBTC15M-sopimusten paper/live-kaupankäyntijärjestelmä. Python 3.11+,
-Coinbase/Kraken-spot-data, kahdeksan kausaalista piirrettä ja
+Coinbase/Kraken-spot-data, yhdeksän kausaalista piirrettä ja
 HistGradientBoostingClassifier. Krypto-markkinoiden oletussiru on **2**.
 Lisenssi: kaupallinen **Proprietary / Single User**; katso [LICENSE](LICENSE).
 
@@ -10,6 +10,14 @@ esikoulutettu **SPOT_PROXY-tutkimusmalli**. Tiedostonimi ei tarkoita todettua
 tuotantokelpoisuutta. Sen synteettiset OOS-backtestit olivat kulujen jälkeen
 tappiollisia. Alkuperä, mittarit ja rajat ovat [mallikortissa](models/MODEL_CARD.md).
 Oikeita toimeksiantoja ei ole käytetty tämän julkaisun testaamiseen.
+
+**OBI-päivityksen mallivaatimus:** version 0.2.0 mukana tullut kahdeksan
+piirteen malli on säilytetty muuttamattomana tutkimushistoriaa varten. Tämä
+koodi vaatii uuden yhdeksän piirteen mallin, ajallisen kalibroinnin ja
+opetusdatasta lasketun volatiliteettiviitteen. Vanha malli hylätään sekä
+paper- että live-ajossa. Älä päivitä käynnissä olevaa positiota hallitsevaa
+daemonia kesken position; vanhan julkaisun riskisulut ovat edelleen sen vastuulla.
+Katso [OBI-, volatiliteetti- ja kalibrointiohje](docs/ML_SAFETY.md).
 
 GitHubin testit ja ostajapaketin julkaisukäytäntö: [julkaisuohje](docs/RELEASE.md).
 
@@ -20,7 +28,8 @@ Pura lähdekoodipaketti ja aja sen juuressa Python 3.11:llä tai uudemmalla:
 ```sh
 python3.12 quickstart.py
 source .venv/bin/activate
-python main.py --mode paper
+# Kun uusi malli on koulutettu aidolla OBI-historialla:
+python main.py --mode paper --model models/hgb_btc15m_latest.joblib
 ```
 
 Alustus luo paikallisen `.venv`-ympäristön, asentaa lukitut riippuvuudet ja
@@ -30,9 +39,10 @@ Python-asennukseen ei asenneta paketteja. Asennus tarvitsee verkon.
 
 ```sh
 python quickstart.py --check             # paikalliset tarkistukset, ei muutoksia
+python quickstart.py --check --model models/hgb_btc15m_latest.joblib
 python quickstart.py --check --network   # lisäksi julkinen markkinahaku
-kalshi-ml-run --mode paper --once
-kalshi-ml-run --mode paper --iterations 5
+kalshi-ml-run --mode paper --model models/hgb_btc15m_latest.joblib --once
+kalshi-ml-run --mode paper --model models/hgb_btc15m_latest.joblib --iterations 5
 ```
 
 Paper käyttää tuotannon julkista tarjouskirjaa ja 1000 dollarin virtuaalisaldoa.
@@ -178,10 +188,17 @@ ratkaisematonta siirtoa uudella UUID:llä. Kalshin määräyksikkö on centicent
 
 ## Koulutus ja raportointi
 
+Erillinen neliluokkainen poistumien tutkimuslabeler ja sen proxy-rajoitukset:
+[MULTICLASS_LABELS.md](docs/MULTICLASS_LABELS.md). Sen targetit eivät sovellu
+nykyisen binäärisen P(YES)-mallin koulutukseen.
+
 ```sh
-python scripts/train_model.py --candles 3000
-python scripts/train_model.py --candles-csv data/raw/btc.csv --cycle-prices data/raw/official_cycles.csv
-python -m kalshi_ml.backtest.engine --candles-csv data/raw/btc.csv
+# Kerää ensin oikeaa, koulutuskynttilöiden kanssa päällekkäistä OBI-historiaa:
+python -m kalshi_ml.data.orderbook --output data/raw/coinbase_obi.csv
+# Lopeta keruu Ctrl+C:llä vasta riittävän historian jälkeen.
+python scripts/train_model.py --candles 3000 --obi-csv data/raw/coinbase_obi.csv
+python scripts/train_model.py --candles-csv data/raw/btc.csv --cycle-prices data/raw/official_cycles.csv --obi-csv data/raw/coinbase_obi.csv
+python -m kalshi_ml.backtest.engine --candles-csv data/raw/btc.csv --obi-csv data/raw/coinbase_obi.csv
 python scripts/view_performance.py --state logs/paper-exchange-2.sqlite3
 kalshi-ml-performance --state logs/live-exchange-2.sqlite3 --json
 ```
@@ -189,7 +206,9 @@ kalshi-ml-performance --state logs/live-exchange-2.sqlite3 --json
 Uudelleenkoulutus tallentaa oletuksena `models/hgb_btc15m_latest.joblib` eikä
 korvaa toimitettua mallia. Valitse ajossa oma tiedosto `--model`-parametrilla.
 Jaon yksikkö on kokonainen sykli ja testijakson alkuun ulottuvat opetusvasteet
-poistetaan. Ilman virallista cycle-CSV:tä käytetään merkittyä SPOT_PROXY-vastetta.
+poistetaan. Viimeiset 30 % ovat OOS-testiä. Niitä edeltävän 70 %:n viimeiset
+20 % varataan sigmoidikalibroinnille; perusmalli ja volatiliteettiviite sovitetaan
+vain sitä edeltävään lohkoon. Ilman virallista cycle-CSV:tä käytetään merkittyä SPOT_PROXY-vastetta.
 `--end` rajaa historiaa. Puuttuvia minuutteja ei täytetä keksityillä hinnoilla.
 
 Suorituskykyraportti avaa journalin vain luku -tilassa. Se näyttää kaupat,
@@ -265,3 +284,21 @@ asetuksia, avaimia, SQLite-tiedostoja, raakadataa, lokeja tai virtuaaliympärist
 Lisenssinantaja yksilöidään ostosopimuksessa/laskulla, koska virallista nimeä
  ei ole vielä valittu. LICENSE ei korvaa myyjän toimitus-, hinta-, vero- tai
 asiakastietoja. Kolmansien osapuolten lisenssit säilyvät erillisinä.
+
+## Kalshin tarjous- ja selvityshavaintojen keruu
+
+Lue [havaintolokin ohje](docs/KALSHI_OBSERVATIONS.md). Käynnistä julkisen,
+vain lukuja tekevän rajapinnan kerääjä komennolla
+`python -m kalshi_ml.data.kalshi_observer --environment PROD --output data/raw/kalshi`.
+Valitsin `--once` tekee yhden kierroksen. Paikallinen loki on Gitin ohittama.
+
+Haaran julkaisutila ja jäljellä olevat datavaatimukset ovat
+[julkaisuvalmiuden yhteenvedossa](docs/RELEASE_READINESS.md).
+
+Aidot Coinbase L2 -havainnot voi kerätä komennolla
+`python -m kalshi_ml.data.orderbook --output data/raw/coinbase_obi.csv --interval 4`.
+Kynttilöistä ei voi rekonstruoida historiallista OBI-piirrettä.
+
+Kerätyn aineiston laadun voi tarkistaa komennolla
+`python -m kalshi_ml.data.quality --minutes 3000`; katso
+[laaturaportin tulkinta](docs/DATA_QUALITY.md).

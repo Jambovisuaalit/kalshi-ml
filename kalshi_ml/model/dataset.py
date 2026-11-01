@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -10,8 +11,9 @@ import pandas as pd
 from kalshi_ml.data.collector import MarketDataCollector, utc_timestamp
 from kalshi_ml.data.features import (
     CYCLE, MINUTE, CyclePrices, FeatureDataError, aggregate_15m,
-    bind_cycle_prices, compute_features, cycle_start,
+    bind_cycle_prices, compute_features, cycle_start, intracycle_volatility,
 )
+from kalshi_ml.data.orderbook import OrderBookSnapshot, imbalance_at, snapshot_records
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,7 @@ class TrainingDataset:
     candles: pd.DataFrame
     cycles: dict[pd.Timestamp, CyclePrices]
     price_mode: str
+    order_books: tuple[OrderBookSnapshot, ...] = ()
 
 
 def load_candles(path: Path) -> pd.DataFrame:
@@ -95,6 +98,7 @@ def build_dataset(
     cycles: dict[pd.Timestamp, CyclePrices] | None = None,
     *,
     as_of: pd.Timestamp | None = None,
+    order_books: pd.DataFrame | Sequence[OrderBookSnapshot] | None = None,
 ) -> TrainingDataset:
     """Sample once per completed minute, binding only the active strike record.
 
@@ -104,6 +108,12 @@ def build_dataset(
     """
     if not len(candles):
         raise ValueError("no candles supplied")
+    books = order_books if order_books is not None else candles.attrs.get("order_books")
+    if not isinstance(books, (pd.DataFrame, tuple)):
+        raise ValueError("real historical Coinbase L2 snapshots required; supply --obi-csv")
+    candles = candles.copy()
+    recorded_books = snapshot_records(books)
+    candles.attrs.pop("order_books", None)
     horizon = utc_timestamp(as_of) if as_of is not None else candles.index[-1] + MINUTE
     records = proxy_cycle_prices(candles, horizon) if cycles is None else cycles
     mode = "SPOT_PROXY" if cycles is None else "OFFICIAL_PRICES"
@@ -125,17 +135,20 @@ def build_dataset(
             continue
         history = candles.loc[(candles.index >= decision.floor("min") - 61 * MINUTE) & (candles.index < decision.floor("min"))]
         try:
-            features = compute_features(bind_cycle_prices(history, [record]), float(candle.close), decision, start)
-        except FeatureDataError:
+            imbalance = imbalance_at(recorded_books, decision)
+            features = compute_features(bind_cycle_prices(history, [record]), float(candle.close), decision, start, order_book_imbalance=imbalance)
+            volatility = intracycle_volatility(history, float(candle.close), decision, start)
+        except (FeatureDataError, ValueError):
             continue
         rows.append({
             "timestamp": decision, "cycle_start_ts": start,
             "label_available_at": record.settle_available_at,
             "target": int(record.cycle_settle > record.strike_open), **features,
+            "cycle_volatility": volatility,
         })
     if not rows:
         raise ValueError("no usable samples: require warmup and completed, observable cycle records")
     samples = pd.DataFrame(rows).set_index("timestamp").sort_index()
     if samples.index.has_duplicates:
         raise ValueError("ambiguous duplicate decision times")
-    return TrainingDataset(samples, candles, records, mode)
+    return TrainingDataset(samples, candles, records, mode, recorded_books)

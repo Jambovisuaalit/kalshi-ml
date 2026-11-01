@@ -1,5 +1,10 @@
 # Bundled pretrained model — 0.2.0
 
+**Legacy artifact:** the post-0.2.0 nine-feature OBI/calibration pipeline rejects
+this eight-feature model. It has no OBI, probability calibrator or training
+volatility reference. Train a new artifact using recorded Coinbase books;
+these historical metrics do not describe the new pipeline.
+
 File: `hgb_btc15m_prod.joblib`. The filename is the deployment path; it is not
 a production-performance certification. Status: **research example, not live
 validated**. This is a real fitted HistGradientBoostingClassifier, not a stub.
@@ -17,7 +22,8 @@ validated**. This is a real fitted HistGradientBoostingClassifier, not a stub.
 - This release repackages the fitted weights without retraining. Original
   training versions and export versions remain separate in the metadata.
 
-Inputs are the eight ordered features in `kalshi_ml.config.FEATURE_NAMES`.
+Inputs are the eight v0.2.0 features: delta_usd, remaining_sec, z_score,
+vol_15m, vol_60m, vol_ratio, mom_1m, mom_3m.
 There is no fitted scaler: preprocessing is identity. The exact sklearn
 version is required by the loader. The manifest checksum detects corruption
 relative to this bundle, but is not a publisher signature or proof of trust.

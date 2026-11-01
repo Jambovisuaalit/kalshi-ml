@@ -51,7 +51,7 @@ class DistributionTests(unittest.TestCase):
         model = Mock()
         model.classes_ = np.array([0, 1])
         model.predict_proba.return_value = np.array([[0.2, 0.8]])
-        predictor = RealtimePredictor(model)
+        predictor = RealtimePredictor(model, calibrator=model)
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
         self.assertEqual(predictor.predict_yes(features), 0.8)
         with self.assertRaises(ValueError):
@@ -65,7 +65,7 @@ class DistributionTests(unittest.TestCase):
 
     def test_inference_rejects_pretraining_decision_time(self) -> None:
         model = Mock()
-        predictor = RealtimePredictor(model, {"inference_not_before": "2026-11-01T12:00:00Z"})
+        predictor = RealtimePredictor(model, {"inference_not_before": "2026-11-01T12:00:00Z"}, calibrator=model)
         with self.assertRaises(ValueError):
             predictor.predict_yes(dict.fromkeys(FEATURE_NAMES, 0.0), as_of=datetime(2026, 11, 1, 11, tzinfo=timezone.utc))
         model.predict_proba.assert_not_called()

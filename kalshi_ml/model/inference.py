@@ -27,12 +27,13 @@ def default_model_path() -> Path:
 class RealtimePredictor:
     """Load once; validate each feature vector and probability distribution.
 
-    No calibration, scaler fit or model mutation occurs during inference.
+    Apply the persisted calibration layer; never fit or mutate it at runtime.
     Only load trusted joblib files, which can execute Python during loading.
     """
 
-    def __init__(self, model: Any, metadata: Mapping[str, Any] | None = None) -> None:
+    def __init__(self, model: Any, metadata: Mapping[str, Any] | None = None, *, calibrator: Any = None) -> None:
         self.model = model
+        self.calibrator = calibrator
         self.metadata = dict(metadata or {})
         if self.metadata.get("feature_names", list(FEATURE_NAMES)) != list(FEATURE_NAMES):
             raise ValueError("incompatible feature order")
@@ -43,14 +44,16 @@ class RealtimePredictor:
         from kalshi_ml.model.trainer import load_artifact
 
         artifact = load_artifact(default_model_path() if path is None else path)
-        return cls(artifact["model"], artifact["metadata"])
+        return cls(artifact["model"], artifact["metadata"], calibrator=artifact["calibrator"])
 
     def predict_batch(self, frame: pd.DataFrame, *, as_of: datetime | None = None) -> np.ndarray:
         """Return P(YES) for finite rows in exactly the declared column order."""
         if list(frame.columns) != list(FEATURE_NAMES) or frame.empty:
-            raise ValueError("expected a nonempty frame with exactly eight ordered features")
+            raise ValueError("expected a nonempty frame with exactly nine ordered features")
         if not np.isfinite(frame.to_numpy(dtype=float)).all():
             raise ValueError("features must be finite")
+        if (frame.obi.abs() > 1).any():
+            raise ValueError("OBI outside [-1,1]")
         if as_of is not None:
             timestamp = pd.Timestamp(as_of)
             if timestamp.tzinfo is None:
@@ -58,10 +61,12 @@ class RealtimePredictor:
             cutoff = self.metadata.get("inference_not_before")
             if cutoff is not None and timestamp < pd.Timestamp(cutoff):
                 raise ValueError("inference precedes the model's OOS cutoff")
-        classes = np.asarray(self.model.classes_)
+        if self.calibrator is None:
+            raise ValueError("a fitted chronological probability calibrator is required")
+        classes = np.asarray(self.calibrator.classes_)
         if classes.shape != (2,) or set(classes.tolist()) != {0, 1}:
             raise ValueError("model must expose exactly the binary classes 0 and 1")
-        probabilities = np.asarray(self.model.predict_proba(frame), dtype=float)
+        probabilities = np.asarray(self.calibrator.predict_proba(frame), dtype=float)
         if (probabilities.shape != (len(frame), 2) or not np.isfinite(probabilities).all()
                 or (probabilities < 0).any() or (probabilities > 1).any()
                 or not np.allclose(probabilities.sum(axis=1), 1.0, atol=1e-8)):
@@ -71,6 +76,6 @@ class RealtimePredictor:
     def predict_yes(self, features: Mapping[str, float], *, as_of: datetime | None = None) -> float:
         """Evaluate one current decision vector in canonical training order."""
         if set(features) != set(FEATURE_NAMES):
-            raise ValueError("feature names must match the eight training features")
+            raise ValueError("feature names must match the nine training features")
         frame = pd.DataFrame([[features[name] for name in FEATURE_NAMES]], columns=list(FEATURE_NAMES))
         return float(self.predict_batch(frame, as_of=as_of)[0])

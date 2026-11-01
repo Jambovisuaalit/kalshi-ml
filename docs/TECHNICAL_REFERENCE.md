@@ -1,5 +1,9 @@
 # Technical reference
 
+The OBI/calibration schema supersedes the v0.2.0 eight-feature inference and
+entry rules below. See [ML_SAFETY.md](ML_SAFETY.md) for nine-feature training,
+two-sigma volatility filtering, fee-adjusted edge and required model migration.
+
 Detailed strategy, API and backtest documentation. For release installation,
 CLI defaults, deployment and the bundled model, follow the root README.md.
 

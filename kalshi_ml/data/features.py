@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from kalshi_ml.config import FEATURE_NAMES
+from kalshi_ml.data.orderbook import imbalance_at
 from kalshi_ml.data.collector import utc_timestamp
 
 CYCLE = pd.Timedelta(minutes=15)
@@ -179,8 +180,10 @@ def compute_features(
     current_spot: float,
     current_ts: datetime | pd.Timestamp,
     cycle_start_ts: datetime | pd.Timestamp,
+    *,
+    order_book_imbalance: float | None = None,
 ) -> dict[str, float]:
-    """Calculate exactly eight causal features in the configured model order.
+    """Calculate nine causal features; OBI must be observed, never imputed.
 
     Requires 61 consecutive completed minute bars ending at the last closed
     minute, and a CyclePrices record attached with bind_cycle_prices. A missing
@@ -203,6 +206,13 @@ def compute_features(
     Settlement fields are not read by this function.
     """
     now, start = utc_timestamp(current_ts), utc_timestamp(cycle_start_ts)
+    if order_book_imbalance is None:
+        try:
+            order_book_imbalance = imbalance_at(df.attrs["order_books"], now)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise FeatureDataError("observable, fresh Coinbase OBI required") from exc
+    if not math.isfinite(order_book_imbalance) or not -1 <= order_book_imbalance <= 1:
+        raise FeatureDataError("OBI must be finite and in [-1,1]")
     if start != cycle_start(now):
         raise FeatureDataError("cycle_start_ts must match the active UTC quarter-hour")
     if not math.isfinite(current_spot) or current_spot <= 0:
@@ -245,7 +255,39 @@ def compute_features(
         "vol_ratio": vol15 / vol60 if vol60 > 0 else 1.0,
         "mom_1m": momentum(1),
         "mom_3m": momentum(3),
+        "obi": float(order_book_imbalance),
     }
     if tuple(result) != FEATURE_NAMES or not all(math.isfinite(value) for value in result.values()):
         raise FeatureDataError("feature schema mismatch or nonfinite output")
+    return result
+
+
+def intracycle_volatility(
+    df: pd.DataFrame, current_spot: float, current_ts: datetime | pd.Timestamp,
+    cycle_start_ts: datetime | pd.Timestamp,
+) -> float:
+    """Causal cycle range/return RMS, normalized by elapsed minutes.
+
+    Sum squared log returns from the cycle's first Coinbase open through all
+    completed closes and the current spot. Forming bar OHLC is never read.
+    Add completed candle log-range squared / (4 log 2), so a closed bar's
+    crash/recovery is retained even when its close returns to the open.
+    Including the current tick detects a jump before the next minute closes.
+    This is a return-based anomaly indicator, not a flash-crash guarantee.
+    """
+    now, start = utc_timestamp(current_ts), utc_timestamp(cycle_start_ts)
+    elapsed = (now - start).total_seconds() / 60
+    if start != cycle_start(now) or elapsed < 1 or not math.isfinite(current_spot) or current_spot <= 0:
+        raise FeatureDataError("intracycle volatility needs an active cycle with one completed minute")
+    history = _closed_history(df, now)
+    values = history.loc[history.index >= start, ["open", "high", "low", "close", "volume"]].astype(float)
+    expected = pd.date_range(start, now.floor("min") - MINUTE, freq="min")
+    if not values.index.equals(expected):
+        raise FeatureDataError("intracycle volatility requires all available cycle candles")
+    _validate_ohlcv(values)
+    prices = np.r_[float(values.open.iloc[0]), values.close.to_numpy(), current_spot]
+    range_variation = np.square(np.log(values.high.to_numpy() / values.low.to_numpy())).sum() / (4 * math.log(2))
+    result = float(np.sqrt((np.square(np.diff(np.log(prices))).sum() + range_variation) / elapsed))
+    if not math.isfinite(result):
+        raise FeatureDataError("nonfinite intracycle volatility")
     return result

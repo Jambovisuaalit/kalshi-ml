@@ -29,7 +29,9 @@ import pandas as pd
 
 from kalshi_ml.config import FEATURE_NAMES, KalshiEnvironment, StrategyConfig, TradingMode
 from kalshi_ml.data.collector import MarketDataCollector, MarketDataError, SpotTicker
-from kalshi_ml.data.features import CyclePrices, FeatureDataError, bind_cycle_prices, compute_features
+from kalshi_ml.data.features import CyclePrices, FeatureDataError, bind_cycle_prices, compute_features, intracycle_volatility
+from kalshi_ml.model.safety import VolatilityReference, net_edge_cents
+from kalshi_ml.data.orderbook import MAX_AGE_SEC
 from kalshi_ml.model.inference import RealtimePredictor
 from kalshi_ml.monitoring.notifier import Notifier
 from kalshi_ml.execution.kalshi_client import (
@@ -127,7 +129,13 @@ class TradingDaemon:
         if client.runtime.mode is not self.config.mode:
             raise ValueError("client/daemon execution modes differ")
         self.client, self.collector, self.artifact, self.store = client, collector, artifact, store
-        self._predictor = RealtimePredictor(artifact["model"], artifact["metadata"])
+        self._predictor = RealtimePredictor(artifact["model"], artifact["metadata"], calibrator=artifact.get("calibrator"))
+        try:
+            self._volatility_reference = VolatilityReference.from_metadata(artifact["metadata"])
+        except (ValueError, KeyError, TypeError):
+            self._volatility_reference = None
+        self._entry_volatility: float | None = None
+        self._last_obi_timestamp: datetime | None = None
         self.notifier = notifier
         self.console = console if console is not None else StatusConsole()
         self.clock, self.monotonic = clock, monotonic
@@ -301,6 +309,8 @@ class TradingDaemon:
         if not 1 <= limit <= 99:
             self._problem("quote has no valid whole-cent order limit")
             return
+        if not closing and not self._entry_safe(side, limit):
+            return
         position = self.state.position
         count = int(position.quantity.to_integral_value(rounding=ROUND_CEILING)) if closing and position else self.config.contracts
         if self.config.mode is TradingMode.PAPER:
@@ -332,6 +342,8 @@ class TradingDaemon:
                 return
             if self._last_spot_timestamp is None or (self.clock() - self._last_spot_timestamp).total_seconds() > self.config.max_data_age_sec:
                 self._problem("spot expired before submission")
+                return
+            if not self._entry_safe(side, limit):
                 return
         pending = PendingOrder(str(uuid.uuid4()), book.ticker, side, closing, count, limit, reason)
         self.state.pending = pending
@@ -441,6 +453,35 @@ class TradingDaemon:
         if reason:
             self._execute(position.side, True, book, reason)
 
+    def _entry_safe(self, side: TargetSide, limit_cents: int) -> bool:
+        """Recheck OBI/spot freshness, two-sigma band and rounded-price EV.
+
+        This gate applies only to new risk; TP/SL/reduce-only exits bypass it.
+        Recheck after live balance/account GETs, immediately before intent.
+        """
+        now = self.clock()
+        ages = ((self._last_obi_timestamp, min(MAX_AGE_SEC, self.config.max_data_age_sec)),
+                (self._last_spot_timestamp, self.config.max_data_age_sec))
+        if any(timestamp is None or not 0 <= (now - timestamp).total_seconds() <= limit
+               for timestamp, limit in ages):
+            self._problem("entry blocked: stale/missing OBI or spot")
+            return False
+        if (self._volatility_reference is None or self._entry_volatility is None
+                or not self._volatility_reference.allows(self._entry_volatility, float(self.strategy.volatility_sigma_limit))):
+            self._problem("entry blocked: intracycle volatility outside training two-sigma band")
+            return False
+        if self._last_probability is None:
+            self._problem("entry blocked: calibrated probability unavailable")
+            return False
+        edge = net_edge_cents(self._last_probability, side, Decimal(limit_cents) / 100, self.strategy)
+        paper_budget = 200 * self.config.paper_fee_per_contract
+        if self.config.mode is TradingMode.PAPER and paper_budget > self.strategy.entry_fee_buffer_cents + self.strategy.exit_fee_buffer_cents:
+            edge -= paper_budget - self.strategy.entry_fee_buffer_cents - self.strategy.exit_fee_buffer_cents
+        if edge < self.strategy.minimum_edge_cents:
+            self._problem("entry blocked: insufficient calibrated edge after price and fee budgets")
+            return False
+        return True
+
     def poll_once(self) -> None:
         """One supervised poll; a pending mutation blocks all further submissions."""
         if not self._started:
@@ -448,6 +489,8 @@ class TradingDaemon:
         if self.state.halt_reason:
             return
         self._last_probability = None
+        self._entry_volatility = None
+        self._last_obi_timestamp = None
         self._last_spot = None
         if self.state.pending:
             self._resolve_pending()
@@ -505,17 +548,24 @@ class TradingDaemon:
             self._problem("spot expired before inference")
             return
         record = CyclePrices(pd.Timestamp(cycle.start), cycle.strike, pd.Timestamp(cycle.strike_available_at), f"kalshi:{cycle.ticker}")
-        features = compute_features(bind_cycle_prices(history, [record]), float(spot.price), pd.Timestamp(now), pd.Timestamp(cycle.start))
         try:
+            obi = self.collector.fetch_order_book(max_age_sec=min(MAX_AGE_SEC, self.config.max_data_age_sec))
+            now = self.clock()
+            self._last_obi_timestamp = min(obi.timestamp, obi.received_at).to_pydatetime(warn=False)
+            if not 0 <= (now - spot.timestamp.to_pydatetime(warn=False)).total_seconds() <= self.config.max_data_age_sec:
+                raise FeatureDataError("spot expired while fetching Coinbase OBI")
+            features = compute_features(bind_cycle_prices(history, [record]), float(spot.price), pd.Timestamp(now), pd.Timestamp(cycle.start), order_book_imbalance=obi.imbalance)
+            self._entry_volatility = intracycle_volatility(history, float(spot.price), pd.Timestamp(now), pd.Timestamp(cycle.start))
             probability = self._predictor.predict_yes(features, as_of=now)
-        except (ValueError, RuntimeError, IndexError, TypeError, AttributeError):
+        except (ValueError, RuntimeError, IndexError, TypeError, AttributeError, MarketDataError):
             self._last_probability = None
-            self._problem("model inference unavailable; risk exits remain enabled")
+            self._problem("OBI/features/calibrated inference unavailable; risk exits remain enabled")
             return
         self._last_probability = probability
         if self.state.position or cycle.traded:
             return
         side: TargetSide | None = None
+        self._last_problem = None
         delta = features["delta_usd"]
         if probability >= float(self.strategy.yes_probability_min) and delta >= float(self.strategy.minimum_delta_usd):
             side = "YES"
@@ -528,8 +578,6 @@ class TradingDaemon:
                 remaining = (cycle.end - now).total_seconds()
                 if (now - book.observed_at).total_seconds() <= self.config.max_data_age_sec and self.strategy.entry_min_remaining_sec <= remaining <= self.strategy.entry_max_remaining_sec:
                     self._execute(side, False, book, "SIGNAL")
-        self._last_problem = None
-
     def _render(self) -> None:
         cycle = self.state.cycle
         remaining = max(0, int((cycle.end - self.clock()).total_seconds())) if cycle else 0

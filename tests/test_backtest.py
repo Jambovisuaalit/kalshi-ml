@@ -4,6 +4,7 @@ from dataclasses import replace
 import unittest
 
 import pandas as pd
+from kalshi_ml.model.safety import VolatilityReference
 
 from kalshi_ml.backtest.engine import (
     BacktestEngine, ExecutionConfig, ExitReason, MarketSnapshot, Settlement,
@@ -16,8 +17,8 @@ class BacktestTests(unittest.TestCase):
     def setUp(self) -> None:
         self.start = pd.Timestamp("2026-11-01T12:00:00Z")
         self.entered = self.start + pd.Timedelta(seconds=120)
-        self.entry = MarketSnapshot(self.entered, self.start, 100_010, 100_000, 0.7, 54, 56, 44, 46)
-        self.engine = BacktestEngine()
+        self.entry = MarketSnapshot(self.entered, self.start, 100_010, 100_000, 0.7, 54, 56, 44, 46, cycle_volatility=0.0001)
+        self.engine = BacktestEngine(volatility_reference=VolatilityReference(0.0001, 0.00001, 100))
 
     def quote(self, bid: int, *, spot: float = 100_010, after: int = 20) -> MarketSnapshot:
         """Create a later single-book quote with exactly two cents of spread."""
@@ -91,9 +92,18 @@ class BacktestTests(unittest.TestCase):
             ExecutionConfig(initial_cash_cents=1), ExecutionConfig(initial_cash_cents=58),
             ExecutionConfig(slippage_cents=20),
         ):
-            report = BacktestEngine(execution=execution).run([self.entry], {}, inference_not_before=self.entered)
+            report = BacktestEngine(execution=execution, volatility_reference=self.engine.volatility_reference).run([self.entry], {}, inference_not_before=self.entered)
             self.assertEqual(len(report.trades), 0)
             self.assertEqual(report.rejected_entries, 1)
+
+    def test_volatility_and_fee_adjusted_edge_gate_entries_but_not_exits(self) -> None:
+        for event in (replace(self.entry, cycle_volatility=None), replace(self.entry, cycle_volatility=0.1),
+                      replace(self.entry, p_yes=0.55)):
+            report = self.replay(event)
+            self.assertEqual(len(report.trades), 0)
+            self.assertEqual(report.rejected_entries, 1)
+        report = self.replay(self.entry, replace(self.quote(30), cycle_volatility=0.1))
+        self.assertEqual(report.trades[0].reason, ExitReason.HARD_STOP)
 
     def test_only_one_trade_per_cycle(self) -> None:
         report = self.replay(self.entry, self.quote(88), replace(self.entry, timestamp=self.entered + pd.Timedelta(seconds=40)))

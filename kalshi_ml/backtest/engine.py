@@ -13,6 +13,7 @@ import argparse
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 import math
 from pathlib import Path
@@ -23,8 +24,11 @@ import pandas as pd
 
 from kalshi_ml.config import FEATURE_NAMES, StrategyConfig, load_settings
 from kalshi_ml.data.collector import utc_timestamp
-from kalshi_ml.data.features import CYCLE, MINUTE, FeatureDataError, bind_cycle_prices, compute_features, cycle_start
+from kalshi_ml.data.features import CYCLE, MINUTE, FeatureDataError, bind_cycle_prices, compute_features, cycle_start, intracycle_volatility
 from kalshi_ml.model.dataset import TrainingDataset
+from kalshi_ml.model.inference import RealtimePredictor
+from kalshi_ml.model.safety import VolatilityReference, net_edge_cents
+from kalshi_ml.data.orderbook import imbalance_at
 
 
 class ExitReason(StrEnum):
@@ -79,6 +83,7 @@ class MarketSnapshot:
     no_bid_cents: int
     no_ask_cents: int
     available_contracts: int = 1
+    cycle_volatility: float | None = None
 
     def __post_init__(self) -> None:
         timestamp, start = utc_timestamp(self.timestamp), utc_timestamp(self.cycle_start_ts)
@@ -88,6 +93,8 @@ class MarketSnapshot:
             raise ValueError("snapshot values must be finite")
         if self.spot <= 0 or self.strike <= 0 or not 0 <= self.p_yes <= 1:
             raise ValueError("invalid spot, strike or probability")
+        if self.cycle_volatility is not None and (not math.isfinite(self.cycle_volatility) or self.cycle_volatility < 0):
+            raise ValueError("invalid intracycle volatility")
         for bid, ask in ((self.yes_bid_cents, self.yes_ask_cents), (self.no_bid_cents, self.no_ask_cents)):
             if type(bid) is not int or type(ask) is not int or not 0 <= bid <= ask <= 100:
                 raise ValueError("quotes must be integer cents in [0,100] with bid <= ask")
@@ -202,9 +209,10 @@ class BacktestEngine:
     queue fill is invented. End-of-data open positions are an explicit error.
     """
 
-    def __init__(self, strategy: StrategyConfig | None = None, execution: ExecutionConfig | None = None) -> None:
+    def __init__(self, strategy: StrategyConfig | None = None, execution: ExecutionConfig | None = None, *, volatility_reference: VolatilityReference | None = None) -> None:
         self.strategy = strategy if strategy is not None else StrategyConfig()
         self.execution = execution if execution is not None else ExecutionConfig()
+        self.volatility_reference = volatility_reference
 
     def run(
         self,
@@ -305,6 +313,18 @@ class BacktestEngine:
                         side, ask = "NO", snapshot.no_ask_cents
                 if side is not None and self.strategy.entry_min_cents <= ask <= self.strategy.entry_max_cents:
                     fill = min(100, ask + slippage)
+                    if not 1 <= fill <= 99:
+                        rejected += 1
+                        continue
+                    if (self.volatility_reference is None or snapshot.cycle_volatility is None
+                            or not self.volatility_reference.allows(snapshot.cycle_volatility, float(self.strategy.volatility_sigma_limit))):
+                        rejected += 1
+                        continue
+                    edge = net_edge_cents(snapshot.p_yes, side, Decimal(fill) / 100, self.strategy)
+                    extra_fee = max(Decimal(0), Decimal(2 * fee) - self.strategy.entry_fee_buffer_cents - self.strategy.exit_fee_buffer_cents)
+                    if edge - extra_fee < self.strategy.minimum_edge_cents:
+                        rejected += 1
+                        continue
                     if fill > self.strategy.entry_max_cents or snapshot.available_contracts < quantity or cash < quantity * (fill + 2 * fee):
                         rejected += 1
                     else:
@@ -347,7 +367,10 @@ def synthetic_snapshots(
             if record.cycle_settle != record.strike_open:
                 settlements[start] = Settlement(start, record.settle_available_at, bool(record.cycle_settle > record.strike_open))
     feature_rows: list[dict[str, float]] = []
+    quote_rows: list[dict[str, float]] = []
+    inference_indices: list[int] = []
     event_rows: list[tuple[pd.Timestamp, pd.Timestamp, float, float]] = []
+    volatilities: list[float | None] = []
     for timestamp, candle in dataset.candles.iterrows():
         if timestamp + MINUTE <= cutoff:
             continue
@@ -362,21 +385,35 @@ def synthetic_snapshots(
                 continue
             history = dataset.candles.loc[(dataset.candles.index >= now.floor("min") - 61 * MINUTE) & (dataset.candles.index < now.floor("min"))]
             try:
-                features = compute_features(bind_cycle_prices(history, [record]), spot, now, start)
+                # Quote proxy uses only z_score. This placeholder is NEVER
+                # supplied to the classifier: actual OBI is required below.
+                quote_features = compute_features(bind_cycle_prices(history, [record]), spot, now, start, order_book_imbalance=0.0)
             except FeatureDataError:
                 continue
-            feature_rows.append(features)
+            volatility = None
+            try:
+                imbalance = imbalance_at(dataset.order_books, now)
+                volatility = intracycle_volatility(history, spot, now, start)
+            except (FeatureDataError, ValueError):
+                pass  # Keep executable quotes for risk exits, forbid entry.
+            else:
+                feature_rows.append({**quote_features, "obi": imbalance})
+                inference_indices.append(len(event_rows))
+            quote_rows.append(quote_features)
+            volatilities.append(volatility)
             event_rows.append((now, start, spot, record.strike_open))
-    if not feature_rows:
+    if not event_rows:
         return [], settlements
-    matrix = pd.DataFrame(feature_rows, columns=list(FEATURE_NAMES))
-    model = artifact["model"]
-    probabilities = model.predict_proba(matrix)[:, int(np.flatnonzero(model.classes_ == 1)[0])]
+    probabilities = np.full(len(event_rows), 0.5)
+    if feature_rows:
+        matrix = pd.DataFrame(feature_rows, columns=list(FEATURE_NAMES))
+        predictor = RealtimePredictor(artifact["model"], metadata, calibrator=artifact.get("calibrator"))
+        probabilities[inference_indices] = predictor.predict_batch(matrix, as_of=cutoff.to_pydatetime())
     snapshots: list[MarketSnapshot] = []
-    for row, features, probability in zip(event_rows, feature_rows, probabilities):
+    for row, features, probability, volatility in zip(event_rows, quote_rows, probabilities, volatilities):
         midpoint = max(1, min(99, int(math.floor(100 * 0.5 * (1 + math.erf(features["z_score"] / math.sqrt(2))) + 0.5))))
         bid, ask = midpoint - 1, midpoint + 1
-        snapshots.append(MarketSnapshot(*row, float(probability), bid, ask, 100 - ask, 100 - bid))
+        snapshots.append(MarketSnapshot(*row, float(probability), bid, ask, 100 - ask, 100 - bid, cycle_volatility=volatility))
     return snapshots, settlements
 
 
@@ -390,7 +427,7 @@ def replay_synthetic(
         snapshots, settlements = synthetic_snapshots(dataset, artifact, path=path)
         if not snapshots:
             raise ValueError("no usable OOS snapshots: check data horizon, model cutoff and cycle records")
-        reports.append(BacktestEngine(strategy).run(
+        reports.append(BacktestEngine(strategy, volatility_reference=VolatilityReference.from_metadata(artifact["metadata"])).run(
             snapshots, settlements, inference_not_before=cutoff,
             end_ts=dataset.candles.index[-1] + MINUTE,
             scenario=f"SYNTHETIC QUOTES / {dataset.price_mode} / path={path}; fee=2c/fill, spread=2c",
